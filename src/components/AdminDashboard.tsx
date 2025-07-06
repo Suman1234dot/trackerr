@@ -1,21 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Calendar, Clock, Download, BarChart3, TrendingUp, Plus, Trash2, Edit, CalendarDays, Target } from 'lucide-react';
+import { Users, Calendar, Clock, Download, BarChart3, TrendingUp, Plus, Trash2, Edit, CalendarDays, Target, AlertTriangle, Timer } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { DatabaseService } from '../services/database';
 import { WorkEntry, User, UserStats } from '../types';
 import UserManagement from './UserManagement';
 import Charts from './Charts';
+import RetroactiveRequests from './RetroactiveRequests';
 
 const AdminDashboard: React.FC = () => {
   const { user } = useAuth();
   const [entries, setEntries] = useState<WorkEntry[]>([]);
   const [dateFilter, setDateFilter] = useState('week');
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'analytics'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'analytics' | 'requests'>('overview');
   const [userStats, setUserStats] = useState<UserStats[]>([]);
 
   useEffect(() => {
     loadData();
+    // Process auto-absent entries on dashboard load
+    DatabaseService.processAutoAbsentEntries();
   }, [dateFilter]);
 
   const loadData = () => {
@@ -50,10 +53,10 @@ const AdminDashboard: React.FC = () => {
 
   const exportData = () => {
     const csvContent = "data:text/csv;charset=utf-8," + 
-      "Date,User,Email,Attendance,Seconds Done,Remarks\n" +
+      "Date,User,Email,Attendance,Seconds Done,Remarks,Submitted At,Late Submission\n" +
       entries.map(entry => {
         const userData = DatabaseService.getAllUsers().find(u => u.id === entry.userId);
-        return `${entry.date},${userData?.name || 'Unknown'},${userData?.email || 'Unknown'},${entry.attendance},${entry.secondsDone || 0},"${entry.remarks || ''}"`;
+        return `${entry.date},${userData?.name || 'Unknown'},${userData?.email || 'Unknown'},${entry.attendance},${entry.secondsDone || 0},"${entry.remarks || ''}",${entry.submittedAt || ''},${entry.isLate ? 'Yes' : 'No'}`;
       }).join("\n");
     
     const encodedUri = encodeURI(csvContent);
@@ -68,6 +71,8 @@ const AdminDashboard: React.FC = () => {
   const totalSeconds = entries.reduce((sum, entry) => sum + (entry.secondsDone || 0), 0);
   const totalPresent = entries.filter(entry => entry.attendance === 'Present').length;
   const totalAbsent = entries.filter(entry => entry.attendance === 'Absent').length;
+  const totalAutoAbsent = entries.filter(entry => entry.attendance === 'Auto-Absent').length;
+  const totalLateSubmissions = entries.filter(entry => entry.isLate).length;
   const totalUsers = userStats.length;
 
   // Calculate overall averages
@@ -81,7 +86,8 @@ const AdminDashboard: React.FC = () => {
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
     { id: 'users', label: 'Users', icon: Users },
-    { id: 'analytics', label: 'Analytics', icon: TrendingUp }
+    { id: 'analytics', label: 'Analytics', icon: TrendingUp },
+    { id: 'requests', label: 'Requests', icon: AlertTriangle }
   ];
 
   return (
@@ -147,7 +153,7 @@ const AdminDashboard: React.FC = () => {
         {activeTab === 'overview' && (
           <>
             {/* Stats Overview */}
-            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
               <div className="glass rounded-2xl p-4 apple-scale glow-blue">
                 <div className="flex items-center justify-between">
                   <div>
@@ -178,6 +184,15 @@ const AdminDashboard: React.FC = () => {
               <div className="glass rounded-2xl p-4 apple-scale glow-blue">
                 <div className="flex items-center justify-between">
                   <div>
+                    <p className="text-red-300 text-xs font-medium rounded-font-light">Auto-Absent</p>
+                    <p className="text-2xl font-bold text-white rounded-font">{totalAutoAbsent}</p>
+                  </div>
+                  <AlertTriangle className="w-8 h-8 text-red-400" />
+                </div>
+              </div>
+              <div className="glass rounded-2xl p-4 apple-scale glow-blue">
+                <div className="flex items-center justify-between">
+                  <div>
                     <p className="text-purple-300 text-xs font-medium rounded-font-light">Weekly Avg</p>
                     <p className="text-2xl font-bold text-white rounded-font">{overallWeeklyAvg}</p>
                     <p className="text-xs text-purple-300 rounded-font-light">sec/day</p>
@@ -193,6 +208,15 @@ const AdminDashboard: React.FC = () => {
                     <p className="text-xs text-cyan-300 rounded-font-light">sec/day</p>
                   </div>
                   <Target className="w-8 h-8 text-cyan-400" />
+                </div>
+              </div>
+              <div className="glass rounded-2xl p-4 apple-scale glow-blue">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-orange-300 text-xs font-medium rounded-font-light">Late Submissions</p>
+                    <p className="text-2xl font-bold text-white rounded-font">{totalLateSubmissions}</p>
+                  </div>
+                  <Timer className="w-8 h-8 text-orange-400" />
                 </div>
               </div>
               <div className="glass rounded-2xl p-4 apple-scale glow-blue">
@@ -222,6 +246,15 @@ const AdminDashboard: React.FC = () => {
                         Present
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-blue-300 uppercase tracking-wider rounded-font-light">
+                        Auto-Absent
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-blue-300 uppercase tracking-wider rounded-font-light">
+                        On Time
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-blue-300 uppercase tracking-wider rounded-font-light">
+                        Late
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-blue-300 uppercase tracking-wider rounded-font-light">
                         Weekly Avg
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-blue-300 uppercase tracking-wider rounded-font-light">
@@ -244,6 +277,21 @@ const AdminDashboard: React.FC = () => {
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-emerald-900/30 text-emerald-300 rounded-font">
                             {userStat.presentDays}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-900/30 text-red-300 rounded-font">
+                            {userStat.autoAbsentDays}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-900/30 text-green-300 rounded-font">
+                            {userStat.onTimeSubmissions}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-orange-900/30 text-orange-300 rounded-font">
+                            {userStat.lateSubmissions}
                           </span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
@@ -285,15 +333,23 @@ const AdminDashboard: React.FC = () => {
                       <div key={entry.id} className="flex items-center justify-between p-4 glass-dark rounded-2xl apple-transition hover:bg-opacity-60">
                         <div className="flex items-center space-x-4">
                           <div className={`w-4 h-4 rounded-full ${
-                            entry.attendance === 'Present' ? 'bg-emerald-400' : 'bg-red-400'
+                            entry.attendance === 'Present' ? 'bg-emerald-400' : 
+                            entry.attendance === 'Auto-Absent' ? 'bg-red-500' : 'bg-red-400'
                           }`}></div>
                           <div>
                             <p className="font-medium text-white rounded-font">{userData?.name || 'Unknown User'}</p>
-                            <p className="text-sm text-blue-300 rounded-font-light">{new Date(entry.date).toLocaleDateString()}</p>
+                            <p className="text-sm text-blue-300 rounded-font-light">
+                              {new Date(entry.date).toLocaleDateString()}
+                              {entry.isLate && <span className="text-orange-400 ml-2">• Late</span>}
+                            </p>
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="text-sm font-medium text-white rounded-font">{entry.attendance}</p>
+                          <p className={`text-sm font-medium rounded-font ${
+                            entry.attendance === 'Auto-Absent' ? 'text-red-400' : 'text-white'
+                          }`}>
+                            {entry.attendance}
+                          </p>
                           {entry.secondsDone && (
                             <p className="text-xs text-blue-300 rounded-font-light">{entry.secondsDone}s</p>
                           )}
@@ -309,6 +365,7 @@ const AdminDashboard: React.FC = () => {
 
         {activeTab === 'users' && <UserManagement onUserChange={loadData} />}
         {activeTab === 'analytics' && <Charts entries={entries} userStats={userStats} />}
+        {activeTab === 'requests' && <RetroactiveRequests />}
       </div>
     </div>
   );

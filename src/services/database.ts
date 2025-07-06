@@ -1,8 +1,10 @@
-import { WorkEntry, User, UserStats } from '../types';
+import { WorkEntry, User, UserStats, RetroactiveRequest, AttendanceSettings } from '../types';
 
 export class DatabaseService {
   private static readonly WORK_ENTRIES_KEY = 'syncink_work_entries';
   private static readonly USERS_KEY = 'syncink_users';
+  private static readonly RETROACTIVE_REQUESTS_KEY = 'syncink_retroactive_requests';
+  private static readonly ATTENDANCE_SETTINGS_KEY = 'syncink_attendance_settings';
 
   static initializeDefaultUsers(): void {
     const existingUsers = this.getAllUsers();
@@ -18,6 +20,14 @@ export class DatabaseService {
         },
         {
           id: '2',
+          email: 'manager@syncink.com',
+          name: 'Manager User',
+          role: 'manager',
+          password: 'manager123',
+          createdAt: new Date().toISOString()
+        },
+        {
+          id: '3',
           email: 'john@syncink.com',
           name: 'John Doe',
           role: 'employee',
@@ -25,7 +35,7 @@ export class DatabaseService {
           createdAt: new Date().toISOString()
         },
         {
-          id: '3',
+          id: '4',
           email: 'jane@syncink.com',
           name: 'Jane Smith',
           role: 'employee',
@@ -36,6 +46,72 @@ export class DatabaseService {
       
       localStorage.setItem(this.USERS_KEY, JSON.stringify(defaultUsers));
     }
+
+    // Initialize default attendance settings
+    const existingSettings = this.getAttendanceSettings();
+    if (!existingSettings) {
+      const defaultSettings: AttendanceSettings = {
+        dailyDeadline: '18:00', // 6:00 PM
+        timeZone: 'Asia/Kolkata',
+        allowRetroactive: true,
+        retroactiveRequiresApproval: true,
+        autoAbsentAfterDeadline: true
+      };
+      localStorage.setItem(this.ATTENDANCE_SETTINGS_KEY, JSON.stringify(defaultSettings));
+    }
+  }
+
+  static getAttendanceSettings(): AttendanceSettings | null {
+    const settings = localStorage.getItem(this.ATTENDANCE_SETTINGS_KEY);
+    return settings ? JSON.parse(settings) : null;
+  }
+
+  static updateAttendanceSettings(settings: AttendanceSettings): void {
+    localStorage.setItem(this.ATTENDANCE_SETTINGS_KEY, JSON.stringify(settings));
+  }
+
+  static isSubmissionOnTime(submissionTime: Date): boolean {
+    const settings = this.getAttendanceSettings();
+    if (!settings) return true;
+
+    const [hours, minutes] = settings.dailyDeadline.split(':').map(Number);
+    const deadline = new Date(submissionTime);
+    deadline.setHours(hours, minutes, 0, 0);
+
+    return submissionTime <= deadline;
+  }
+
+  static processAutoAbsentEntries(): void {
+    const settings = this.getAttendanceSettings();
+    if (!settings || !settings.autoAbsentAfterDeadline) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    const [hours, minutes] = settings.dailyDeadline.split(':').map(Number);
+    const deadline = new Date();
+    deadline.setHours(hours, minutes, 0, 0);
+
+    // Only process if current time is past deadline
+    if (new Date() <= deadline) return;
+
+    const employees = this.getAllUsers().filter(u => u.role === 'employee');
+    const existingEntries = this.getAllEntries();
+
+    employees.forEach(employee => {
+      const hasEntry = existingEntries.some(entry => 
+        entry.userId === employee.id && entry.date === today
+      );
+
+      if (!hasEntry) {
+        const autoAbsentEntry: Omit<WorkEntry, 'id' | 'createdAt'> = {
+          userId: employee.id,
+          date: today,
+          attendance: 'Auto-Absent',
+          submittedAt: new Date().toISOString(),
+          isLate: false
+        };
+        this.addEntry(autoAbsentEntry);
+      }
+    });
   }
 
   static getAllUsers(): User[] {
@@ -75,10 +151,14 @@ export class DatabaseService {
     const filteredUsers = users.filter(u => u.id !== userId);
     localStorage.setItem(this.USERS_KEY, JSON.stringify(filteredUsers));
     
-    // Also delete user's work entries
+    // Also delete user's work entries and retroactive requests
     const entries = this.getAllEntries();
     const filteredEntries = entries.filter(e => e.userId !== userId);
     localStorage.setItem(this.WORK_ENTRIES_KEY, JSON.stringify(filteredEntries));
+
+    const requests = this.getAllRetroactiveRequests();
+    const filteredRequests = requests.filter(r => r.userId !== userId);
+    localStorage.setItem(this.RETROACTIVE_REQUESTS_KEY, JSON.stringify(filteredRequests));
   }
 
   static getAllEntries(): WorkEntry[] {
@@ -92,10 +172,15 @@ export class DatabaseService {
 
   static addEntry(entry: Omit<WorkEntry, 'id' | 'createdAt'>): WorkEntry {
     const entries = this.getAllEntries();
+    const submissionTime = new Date();
+    const isOnTime = this.isSubmissionOnTime(submissionTime);
+    
     const newEntry: WorkEntry = {
       ...entry,
       id: Date.now().toString(),
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      submittedAt: submissionTime.toISOString(),
+      isLate: !isOnTime && entry.attendance !== 'Auto-Absent'
     };
     
     entries.push(newEntry);
@@ -118,6 +203,53 @@ export class DatabaseService {
     return entries.filter(entry => entry.date >= startDate && entry.date <= endDate);
   }
 
+  // Retroactive Request Management
+  static getAllRetroactiveRequests(): RetroactiveRequest[] {
+    const requests = localStorage.getItem(this.RETROACTIVE_REQUESTS_KEY);
+    return requests ? JSON.parse(requests) : [];
+  }
+
+  static addRetroactiveRequest(request: Omit<RetroactiveRequest, 'id'>): RetroactiveRequest {
+    const requests = this.getAllRetroactiveRequests();
+    const newRequest: RetroactiveRequest = {
+      ...request,
+      id: Date.now().toString()
+    };
+    
+    requests.push(newRequest);
+    localStorage.setItem(this.RETROACTIVE_REQUESTS_KEY, JSON.stringify(requests));
+    return newRequest;
+  }
+
+  static updateRetroactiveRequest(updatedRequest: RetroactiveRequest): void {
+    const requests = this.getAllRetroactiveRequests();
+    const index = requests.findIndex(r => r.id === updatedRequest.id);
+    if (index !== -1) {
+      requests[index] = updatedRequest;
+      localStorage.setItem(this.RETROACTIVE_REQUESTS_KEY, JSON.stringify(requests));
+
+      // If approved, update the original entry
+      if (updatedRequest.status === 'approved') {
+        const entries = this.getAllEntries();
+        const entryIndex = entries.findIndex(e => e.id === updatedRequest.entryId);
+        if (entryIndex !== -1) {
+          entries[entryIndex] = {
+            ...entries[entryIndex],
+            attendance: updatedRequest.requestedAttendance,
+            secondsDone: updatedRequest.requestedSecondsDone,
+            remarks: updatedRequest.requestedRemarks,
+            retroactiveRequest: updatedRequest
+          };
+          localStorage.setItem(this.WORK_ENTRIES_KEY, JSON.stringify(entries));
+        }
+      }
+    }
+  }
+
+  static getPendingRetroactiveRequests(): RetroactiveRequest[] {
+    return this.getAllRetroactiveRequests().filter(r => r.status === 'pending');
+  }
+
   static getUserStats(): UserStats[] {
     const users = this.getAllUsers().filter(u => u.role === 'employee');
     const entries = this.getAllEntries();
@@ -127,6 +259,9 @@ export class DatabaseService {
       const userEntries = entries.filter(e => e.userId === user.id);
       const presentEntries = userEntries.filter(e => e.attendance === 'Present');
       const absentEntries = userEntries.filter(e => e.attendance === 'Absent');
+      const autoAbsentEntries = userEntries.filter(e => e.attendance === 'Auto-Absent');
+      const onTimeSubmissions = userEntries.filter(e => !e.isLate && e.attendance !== 'Auto-Absent').length;
+      const lateSubmissions = userEntries.filter(e => e.isLate).length;
       const totalSeconds = presentEntries.reduce((sum, e) => sum + (e.secondsDone || 0), 0);
       
       // Calculate weekly average (last 7 days)
@@ -157,9 +292,12 @@ export class DatabaseService {
         totalSeconds,
         presentDays: presentEntries.length,
         absentDays: absentEntries.length,
+        autoAbsentDays: autoAbsentEntries.length,
         lastActivity: user.lastLogin || user.createdAt,
         weeklyAverage,
-        monthlyAverage
+        monthlyAverage,
+        onTimeSubmissions,
+        lateSubmissions
       };
     });
   }
